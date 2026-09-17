@@ -1,0 +1,25 @@
+{
+  "name": "green-space-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "城市绿地养护记录系统前端（Vue 3 + Vite + Element Plus）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "axios": "^1.7.9",
+    "echarts": "^5.5.1",
+    "element-plus": "^2.9.1",
+    "pinia": "^2.3.0",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^5.4.11"
+  }
+}

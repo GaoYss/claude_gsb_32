@@ -1,0 +1,71 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: green-space-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-green_space}
+      POSTGRES_USER: ${POSTGRES_USER:-green_space}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-green_space_pwd}
+      TZ: Asia/Shanghai
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-green_space} -d ${POSTGRES_DB:-green_space}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - green-space
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    container_name: green-space-api
+    environment:
+      # 容器内直接使用 PostgreSQL；本地开发默认落在 SQLite
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-green_space}:${POSTGRES_PASSWORD:-green_space_pwd}@db:5432/${POSTGRES_DB:-green_space}
+      AUTO_CREATE_TABLES: "true"
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-true}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      TZ: Asia/Shanghai
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/api/v1/meta/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 25s
+    ports:
+      - "${BACKEND_PORT:-5000}:5000"
+    networks:
+      - green-space
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: green-space-web
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    ports:
+      - "${FRONTEND_PORT:-8090}:80"
+    networks:
+      - green-space
+    restart: unless-stopped
+
+volumes:
+  db_data:
+
+networks:
+  green-space:
+    driver: bridge
