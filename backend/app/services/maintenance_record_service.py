@@ -128,8 +128,18 @@ class MaintenanceRecordService(BaseService):
 
     @classmethod
     def delete(cls, obj_id):
+        """删除养护记录：同一事务内完成全部联动，失败则整体回滚。
+
+        - 解除绿植更换明细对本记录的引用（明细本身保留，归入日常更换）；
+        - 按任务下的剩余记录重新推算任务状态（完成率、看板随任务状态实时更新，
+          绿地最近养护日期由记录实时聚合，均随事务一并生效）。
+        """
         instance = cls.get(obj_id)
         task_id = instance.task_id
+        # 显式解除更换明细关联，不依赖关系级联的隐式置空，
+        # 避免 relationship 配置调整（如 passive_deletes）后留下悬空外键
+        for replacement in instance.replacements:
+            replacement.maintenance_record_id = None
         db.session.delete(instance)
         db.session.flush()
         cls.sync_task_status(task_id)

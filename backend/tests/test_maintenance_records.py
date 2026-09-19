@@ -135,6 +135,67 @@ def test_delete_record_reverts_task_status(api, make_task):
     assert task_after["completed_at"] is None
 
 
+def test_delete_record_syncs_task_stats_and_replacements(
+    api, make_task, make_record, make_replacement
+):
+    """删除带更换明细的合格记录：任务状态、完成率、最近养护日期与更换明细一并联动。"""
+    task = make_task()
+    record = make_record(task=task, quality_result="qualified", record_date=date(2026, 3, 12))
+    replacement = make_replacement(record=record, replace_date=date(2026, 3, 12))
+    space_id = task.green_space_id
+
+    # 删除前：任务已完成、完成率 100%、最近养护日期停在这条记录上
+    assert api.data(api.get(f"/api/v1/maintenance-tasks/{task.id}"))["status"] == "completed"
+    assert api.data(api.get("/api/v1/statistics/overview"))["task"]["completion_rate"] == 100.0
+    profile = api.data(api.get(f"/api/v1/green-spaces/{space_id}/profile"))
+    assert profile["statistics"]["last_maintenance_date"] == "2026-03-12"
+
+    api.delete(f"/api/v1/maintenance-records/{record.id}")
+
+    # 任务状态回落，完成率与最近养护日期同步更新
+    task_after = api.data(api.get(f"/api/v1/maintenance-tasks/{task.id}"))
+    assert task_after["status"] == "pending"
+    assert task_after["completed_at"] is None
+    assert api.data(api.get("/api/v1/statistics/overview"))["task"]["completion_rate"] == 0.0
+    profile = api.data(api.get(f"/api/v1/green-spaces/{space_id}/profile"))
+    assert profile["statistics"]["last_maintenance_date"] is None
+
+    # 更换明细保留但解除关联，不出现悬空引用
+    repl_after = api.data(api.get(f"/api/v1/plant-replacements/{replacement.id}"))
+    assert repl_after["maintenance_record_id"] is None
+    assert repl_after["record"] is None
+
+
+def test_delete_record_rolls_back_when_sync_fails(
+    api, make_task, make_record, make_replacement, monkeypatch
+):
+    """删除过程中联动失败时整体回滚，不会出现只删了记录而其他未动的情况。"""
+    from app.extensions import db
+    from app.services import MaintenanceRecordService
+
+    task = make_task()
+    record = make_record(task=task, quality_result="qualified")
+    replacement = make_replacement(record=record)
+    task_id, record_id, replacement_id = task.id, record.id, replacement.id
+
+    def fail_sync(*args, **kwargs):
+        raise RuntimeError("模拟联动失败")
+
+    monkeypatch.setattr(MaintenanceRecordService, "sync_task_status", fail_sync)
+    response = api.delete(f"/api/v1/maintenance-records/{record_id}")
+    assert response.status_code == 500
+
+    # 生产环境中失败请求会在 teardown 时回滚会话；测试共享同一 app context，
+    # 这里手动复位会话以模拟相同的回滚语义后再断言
+    db.session.remove()
+
+    # 记录未被删除，任务仍是已完成，更换明细关联保持原样
+    assert api.data(api.get(f"/api/v1/maintenance-records/{record_id}"))["id"] == record_id
+    assert api.data(api.get(f"/api/v1/maintenance-tasks/{task_id}"))["status"] == "completed"
+    repl = api.data(api.get(f"/api/v1/plant-replacements/{replacement_id}"))
+    assert repl["maintenance_record_id"] == record_id
+
+
 def test_update_record_quality_resyncs_task(api, make_task):
     task = make_task()
     record = api.data(api.post("/api/v1/maintenance-records", {
