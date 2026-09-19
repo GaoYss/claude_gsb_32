@@ -128,12 +128,27 @@ class MaintenanceRecordService(BaseService):
 
     @classmethod
     def delete(cls, obj_id):
+        """删除养护记录，并在同一个事务内完成全部联动。
+
+        - 从属的绿植更换明细随记录一并删除（关系级联），不留下孤立更换记录；
+        - 重新推算关联任务状态与完成时间，完成率随之回落；
+        - 绿地最近养护日期为读时聚合，记录删除后自然回退到上一条。
+
+        任一步骤失败都整体回滚，避免出现「记录删了、明细与任务状态却没动」。
+        """
+
         instance = cls.get(obj_id)
         task_id = instance.task_id
-        db.session.delete(instance)
-        db.session.flush()
-        cls.sync_task_status(task_id)
-        db.session.commit()
+        try:
+            # relationship 配置了 cascade="all, delete-orphan"，
+            # flush 时会先删除挂载在该记录下的绿植更换明细
+            db.session.delete(instance)
+            db.session.flush()
+            cls.sync_task_status(task_id)
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            raise
         return instance
 
     # ------------------------------------------------------------ 查询

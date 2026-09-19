@@ -153,8 +153,8 @@ async function remove(row) {
   try {
     await ElMessageBox.confirm(
       row.task
-        ? `删除后任务「${row.task.title}」的状态会重新计算，是否继续？`
-        : '确认删除该养护记录吗？',
+        ? `删除后关联的绿植更换明细会一并删除，任务「${row.task.title}」的状态与完成率会重新计算，是否继续？`
+        : '删除后关联的绿植更换明细会一并删除，是否继续？',
       '删除确认',
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
     )

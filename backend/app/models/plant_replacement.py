@@ -19,7 +19,7 @@ class PlantReplacement(TimestampMixin, db.Model):
     )
     maintenance_record_id = db.Column(
         db.Integer,
-        db.ForeignKey("maintenance_record.id", ondelete="SET NULL"),
+        db.ForeignKey("maintenance_record.id", ondelete="CASCADE"),
         nullable=True,
         index=True,
     )

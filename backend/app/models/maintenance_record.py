@@ -35,7 +35,13 @@ class MaintenanceRecord(TimestampMixin, db.Model):
 
     task = db.relationship("MaintenanceTask", back_populates="records")
     green_space = db.relationship("GreenSpace", back_populates="records", lazy="joined")
-    replacements = db.relationship("PlantReplacement", back_populates="record")
+    # 更换明细从属于养护记录：删除记录时由 ORM 在同一事务内级联删除，
+    # 避免出现「记录已删、更换明细还挂在该绿地」的孤儿数据
+    replacements = db.relationship(
+        "PlantReplacement",
+        back_populates="record",
+        cascade="all, delete-orphan",
+    )
 
     def to_dict(self, detail=False):
         data = {

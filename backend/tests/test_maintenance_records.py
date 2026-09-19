@@ -135,6 +135,93 @@ def test_delete_record_reverts_task_status(api, make_task):
     assert task_after["completed_at"] is None
 
 
+def test_delete_record_cascades_replacements_and_reverts_all_aggregates(
+    api, make_space, make_task, make_record, make_replacement
+):
+    """删除带更换明细的记录：明细级联删除，任务/完成率/最近养护日期一并回落。"""
+
+    space = make_space()
+    # 更早的一条独立记录，使被删记录不是该绿地唯一一次养护
+    make_record(space=space, record_date=date(2026, 3, 1),
+                work_content="月初日常巡查", quality_result="qualified")
+    task = make_task(space=space, plan_date=date(2026, 3, 8))
+    record = make_record(task=task, record_date=date(2026, 3, 12),
+                         quality_result="qualified")
+    make_replacement(record=record, replace_date=date(2026, 3, 12),
+                     quantity=6, unit_price=100)
+
+    # 删除前：任务已完成、完成率 100%、最近养护日期停在 3-12、有 1 条更换
+    assert api.data(api.get(f"/api/v1/maintenance-tasks/{task.id}"))["status"] == "completed"
+    profile = api.data(api.get(f"/api/v1/green-spaces/{space.id}/profile"))
+    assert profile["statistics"]["last_maintenance_date"] == "2026-03-12"
+    assert profile["statistics"]["replacement_count"] == 1
+    assert api.data(api.get("/api/v1/statistics/overview"))["task"]["completion_rate"] == 100.0
+
+    response = api.delete(f"/api/v1/maintenance-records/{record.id}")
+    assert response.status_code == 200
+
+    # 任务状态回落为待执行，完成时间清空
+    task_after = api.data(api.get(f"/api/v1/maintenance-tasks/{task.id}"))
+    assert task_after["status"] == "pending"
+    assert task_after["completed_at"] is None
+    # 任务进度中的更换口径同步清空
+    assert task_after["progress"]["replacement_count"] == 0
+
+    # 完成率回到 0
+    overview = api.data(api.get("/api/v1/statistics/overview"))
+    assert overview["task"]["by_status"]["completed"] == 0
+    assert overview["task"]["completion_rate"] == 0.0
+
+    # 绿地最近养护日期回退到上一条记录，更换明细与金额一并清掉
+    profile = api.data(api.get(f"/api/v1/green-spaces/{space.id}/profile"))
+    assert profile["statistics"]["last_maintenance_date"] == "2026-03-01"
+    assert profile["statistics"]["record_count"] == 1
+    assert profile["statistics"]["replacement_count"] == 0
+    assert profile["statistics"]["replacement_amount"] == 0
+    assert profile["recent_replacements"] == []
+
+    # 关联的绿植更换明细已被级联删除，而不是留下孤立记录
+    replacements = api.data(api.get("/api/v1/plant-replacements", green_space_id=space.id))
+    assert replacements["meta"]["total"] == 0
+
+
+def test_delete_record_rolls_back_when_sync_fails(
+    api, make_task, make_record, make_replacement, monkeypatch
+):
+    """联动过程中抛错时整体回滚：记录、更换明细与任务状态都保持删除前。"""
+
+    import pytest
+
+    from app.extensions import db
+    from app.models import MaintenanceRecord, PlantReplacement
+    from app.services import MaintenanceRecordService
+
+    task = make_task()
+    record = make_record(task=task, quality_result="qualified")
+    replacement = make_replacement(record=record)
+    record_id, replacement_id = record.id, replacement.id
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("模拟任务状态重算失败")
+
+    monkeypatch.setattr(MaintenanceRecordService, "sync_task_status", boom)
+
+    with pytest.raises(RuntimeError):
+        MaintenanceRecordService.delete(record_id)
+
+    # 回滚后记录与更换明细都还在，任务仍是已完成
+    db.session.expire_all()
+    assert db.session.get(MaintenanceRecord, record_id) is not None
+    assert db.session.get(PlantReplacement, replacement_id) is not None
+    detail = api.data(api.get(f"/api/v1/maintenance-tasks/{task.id}"))
+    assert detail["status"] == "completed"
+    assert api.get(f"/api/v1/maintenance-records/{record_id}").status_code == 200
+    listed = api.data(
+        api.get("/api/v1/plant-replacements", maintenance_record_id=record_id)
+    )
+    assert listed["meta"]["total"] == 1
+
+
 def test_update_record_quality_resyncs_task(api, make_task):
     task = make_task()
     record = api.data(api.post("/api/v1/maintenance-records", {
